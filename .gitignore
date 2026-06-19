@@ -1,0 +1,18 @@
+# Dependency directories
+node_modules/
+
+# Environment variables (contains sensitive secrets/credentials)
+.env
+.env.local
+.env.*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
