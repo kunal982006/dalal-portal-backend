@@ -8,7 +8,7 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 router.get('/', getLeads);
-router.get('/balance/:clientName', getClientBalance);
+router.get('/balance/:email', getClientBalance);
 router.post('/upload', upload.single('file'), uploadLeads);
 
 module.exports = router;

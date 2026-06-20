@@ -45,31 +45,31 @@ const uploadLeads = async (req, res) => {
       return res.status(400).json({ error: 'Please upload an Excel file.' });
     }
 
-    const { client_name } = req.body;
-    if (!client_name) {
-      return res.status(400).json({ error: 'Client name is required.' });
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'User email is required.' });
     }
 
     // ============================================================
     // WALLET BALANCE CHECK - Block uploads if insufficient balance
     // ============================================================
     const clientResult = await db.query(
-      'SELECT wallet_balance FROM clients WHERE client_name = $1',
-      [client_name]
+      'SELECT wallet_balance FROM clients WHERE email = $1',
+      [email]
     );
 
     if (clientResult.rows.length === 0) {
-      console.log(`⚠️ Client "${client_name}" not found in clients table.`);
-      return res.status(400).json({ error: 'Client not found. Please contact admin to set up your account.' });
+      console.log(`⚠️ User "${email}" not found in clients table.`);
+      return res.status(400).json({ error: 'Account not found. Please contact admin to set up your account.' });
     }
 
     const currentBalance = parseFloat(clientResult.rows[0].wallet_balance);
     if (currentBalance < 11.00) {
-      console.log(`🚫 BLOCKED: Client "${client_name}" has ₹${currentBalance.toFixed(2)} — insufficient for calls (min ₹11.00 required).`);
+      console.log(`🚫 BLOCKED: User "${email}" has ₹${currentBalance.toFixed(2)} — insufficient for calls (min ₹11.00 required).`);
       return res.status(400).json({ error: 'Insufficient wallet balance. Please recharge.' });
     }
 
-    console.log(`✅ WALLET CHECK PASSED: Client "${client_name}" has ₹${currentBalance.toFixed(2)} — proceeding with upload.`);
+    console.log(`✅ WALLET CHECK PASSED: User "${email}" has ₹${currentBalance.toFixed(2)} — proceeding with upload.`);
 
     // Parse Excel file
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
@@ -81,7 +81,7 @@ const uploadLeads = async (req, res) => {
       return res.status(400).json({ error: 'The uploaded file is empty.' });
     }
 
-    console.log(`📈 Processing ${data.length} potential murgas for client: ${client_name}...`);
+    console.log(`📈 Processing ${data.length} potential murgas for user: ${email}...`);
 
     let addedCount = 0;
 
@@ -94,8 +94,8 @@ const uploadLeads = async (req, res) => {
         try {
           // 1. Pehle murga tahkhane mein lock karo (PENDING status ke sath)
           await db.query(
-            "INSERT INTO leads (client_name, customer_name, phone_number, status) VALUES ($1, $2, $3, 'PENDING')",
-            [client_name, customerName, cleanPhone]
+            "INSERT INTO leads (email, customer_name, phone_number, status) VALUES ($1, $2, $3, 'PENDING')",
+            [email, customerName, cleanPhone]
           );
           addedCount++;
 
@@ -125,7 +125,7 @@ const uploadLeads = async (req, res) => {
 const getLeads = async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT id, client_name, customer_name, phone_number, status, created_at FROM leads ORDER BY created_at DESC'
+      'SELECT id, email, customer_name, phone_number, status, created_at FROM leads ORDER BY created_at DESC'
     );
     res.status(200).json(result.rows);
   } catch (error) {
@@ -136,13 +136,13 @@ const getLeads = async (req, res) => {
 
 const getClientBalance = async (req, res) => {
   try {
-    const { clientName } = req.params;
-    if (!clientName) {
-      return res.status(400).json({ error: 'Client name is required.' });
+    const { email } = req.params;
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required.' });
     }
     const result = await db.query(
-      'SELECT wallet_balance FROM clients WHERE client_name = $1',
-      [clientName]
+      'SELECT wallet_balance FROM clients WHERE email = $1',
+      [email]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Client not found' });

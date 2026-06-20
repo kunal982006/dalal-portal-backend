@@ -48,14 +48,14 @@ const handleVapiWebhook = async (req, res) => {
         const callCost = (callDuration / 60) * 11;
 
         if (callCost > 0) {
-          // Find the client_name associated with this lead
+          // Find the email associated with this lead
           const leadResult = await db.query(
-            "SELECT client_name FROM leads WHERE phone_number LIKE '%' || $1 || '%' LIMIT 1",
+            "SELECT email FROM leads WHERE phone_number LIKE '%' || $1 || '%' LIMIT 1",
             [cleanPhone]
           );
 
           if (leadResult.rows.length > 0) {
-            const clientName = leadResult.rows[0].client_name;
+            const userEmail = leadResult.rows[0].email;
 
             // Use a transaction for atomic balance deduction
             const client = await db.pool.connect();
@@ -66,22 +66,22 @@ const handleVapiWebhook = async (req, res) => {
               const deductResult = await client.query(
                 `UPDATE clients 
                  SET wallet_balance = wallet_balance - $1, updated_at = CURRENT_TIMESTAMP 
-                 WHERE client_name = $2 
+                 WHERE email = $2 
                  RETURNING wallet_balance`,
-                [callCost.toFixed(2), clientName]
+                [callCost.toFixed(2), userEmail]
               );
 
               if (deductResult.rowCount > 0) {
                 await client.query('COMMIT');
                 const remainingBalance = deductResult.rows[0].wallet_balance;
-                console.log(`💰 WALLET DEDUCTED: ₹${callCost.toFixed(2)} from "${clientName}" | Duration: ${callDuration}s | Remaining Balance: ₹${remainingBalance}`);
+                console.log(`💰 WALLET DEDUCTED: ₹${callCost.toFixed(2)} from "${userEmail}" | Duration: ${callDuration}s | Remaining Balance: ₹${remainingBalance}`);
               } else {
                 await client.query('ROLLBACK');
-                console.error(`⚠️ WALLET ERROR: Client "${clientName}" not found in clients table. No deduction made.`);
+                console.error(`⚠️ WALLET ERROR: User "${userEmail}" not found in clients table. No deduction made.`);
               }
             } catch (txErr) {
               await client.query('ROLLBACK');
-              console.error(`🔥 WALLET TRANSACTION FAILED for "${clientName}":`, txErr.message);
+              console.error(`🔥 WALLET TRANSACTION FAILED for "${userEmail}":`, txErr.message);
             } finally {
               client.release();
             }
