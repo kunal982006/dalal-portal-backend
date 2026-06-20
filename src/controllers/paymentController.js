@@ -4,8 +4,8 @@ const db = require('../config/database');
 
 // Initialize Razorpay instance
 const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
+  key_id: process.env.RAZORPAY_KEY_ID || 'dummy_key_id_for_now',
+  key_secret: process.env.RAZORPAY_KEY_SECRET || 'dummy_key_secret_for_now',
 });
 
 // ────────────────────────────────────────────────
