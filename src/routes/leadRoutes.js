@@ -1,6 +1,6 @@
 const express = require('express');
 const multer = require('multer');
-const { uploadLeads, getLeads } = require('../controllers/leadController');
+const { uploadLeads, getLeads, getClientBalance } = require('../controllers/leadController');
 
 const router = express.Router();
 
@@ -8,6 +8,7 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 router.get('/', getLeads);
+router.get('/balance/:clientName', getClientBalance);
 router.post('/upload', upload.single('file'), uploadLeads);
 
 module.exports = router;

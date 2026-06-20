@@ -1,6 +1,9 @@
 const xlsx = require('xlsx');
 const db = require('../config/database');
 
+// Jugaad Queue - Simple delay helper to dodge Vapi's 429 rate limit
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 // Hitman Supari Function - Ye Vapi ko call lagane bolega
 const triggerVapiCall = async (customerName, phoneNumber) => {
   try {
@@ -99,6 +102,11 @@ const uploadLeads = async (req, res) => {
           // 2. TRIGGER DABAAO! Hitman ko piche lagao
           await triggerVapiCall(customerName, cleanPhone);
 
+          // 3. Jugaad Queue - Thoda ruk jao bhai, Vapi ka free tier hai
+          console.log(`⏳ Sleeping for 45s to respect Vapi limits... (${addedCount}/${data.length} done)`);
+          await sleep(45000);
+          console.log(`⏰ Woke up, moving to the next murga...`);
+
         } catch (err) {
           console.error(`❌ Failed to insert lead ${customerName} into Tahkhana:`, err.message);
         }
@@ -126,7 +134,28 @@ const getLeads = async (req, res) => {
   }
 };
 
+const getClientBalance = async (req, res) => {
+  try {
+    const { clientName } = req.params;
+    if (!clientName) {
+      return res.status(400).json({ error: 'Client name is required.' });
+    }
+    const result = await db.query(
+      'SELECT wallet_balance FROM clients WHERE client_name = $1',
+      [clientName]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+    res.status(200).json({ wallet_balance: parseFloat(result.rows[0].wallet_balance) });
+  } catch (error) {
+    console.error('🔥 Failed to fetch client balance:', error);
+    res.status(500).json({ error: 'Internal server error fetching balance.' });
+  }
+};
+
 module.exports = {
   uploadLeads,
   getLeads,
+  getClientBalance,
 };
