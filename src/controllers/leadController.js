@@ -81,7 +81,16 @@ const uploadLeads = async (req, res) => {
       return res.status(400).json({ error: 'The uploaded file is empty.' });
     }
 
-    console.log(`📈 Processing ${data.length} potential murgas for user: ${email}...`);
+    // Generate unique batch ID
+    const now = new Date();
+    const day = String(now.getDate()).padStart(2, '0');
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const year = now.getFullYear();
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const batchId = `Batch_${day}${month}${year}_${hours}${minutes}`;
+
+    console.log(`📈 Processing ${data.length} potential murgas for user: ${email} in batch: ${batchId}...`);
 
     let addedCount = 0;
 
@@ -94,8 +103,8 @@ const uploadLeads = async (req, res) => {
         try {
           // 1. Pehle murga tahkhane mein lock karo (PENDING status ke sath)
           await db.query(
-            "INSERT INTO leads (email, customer_name, phone_number, status) VALUES ($1, $2, $3, 'PENDING')",
-            [email, customerName, cleanPhone]
+            "INSERT INTO leads (email, customer_name, phone_number, status, batch_id) VALUES ($1, $2, $3, 'PENDING', $4)",
+            [email, customerName, cleanPhone, batchId]
           );
           addedCount++;
 
@@ -125,7 +134,7 @@ const uploadLeads = async (req, res) => {
 const getLeads = async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT id, email, customer_name, phone_number, status, created_at FROM leads ORDER BY created_at DESC'
+      'SELECT id, email, customer_name, phone_number, status, batch_id, recording_url, transcript_summary, created_at FROM leads ORDER BY created_at DESC'
     );
     res.status(200).json(result.rows);
   } catch (error) {

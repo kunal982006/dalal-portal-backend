@@ -14,8 +14,9 @@ const handleVapiWebhook = async (req, res) => {
 
     if (type === 'end-of-call-report') {
       const customerPhone = message.call?.customer?.number || message.customer?.number;
-      const callSummary = message.summary || '';
+      const callSummary = message.analysis?.summary || message.summary || '';
       const callDuration = message.duration || message.call?.duration || 0; // in seconds
+      const recordingUrl = message.recordingUrl || null;
 
       // Basic logic to classify lead based on summary text or tags
       let newStatus = 'YELLOW'; // Default: Attempted but unsure
@@ -31,8 +32,8 @@ const handleVapiWebhook = async (req, res) => {
         const cleanPhone = customerPhone.slice(-10);
 
         const result = await db.query(
-          "UPDATE leads SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE phone_number LIKE '%' || $2 || '%' AND status != 'GREEN'",
-          [newStatus, cleanPhone]
+          "UPDATE leads SET status = $1, recording_url = $2, transcript_summary = $3, updated_at = CURRENT_TIMESTAMP WHERE phone_number LIKE '%' || $4 || '%' AND status != 'GREEN'",
+          [newStatus, recordingUrl, callSummary, cleanPhone]
         );
 
         if (result.rowCount > 0) {
