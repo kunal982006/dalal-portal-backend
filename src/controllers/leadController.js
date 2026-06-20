@@ -47,6 +47,27 @@ const uploadLeads = async (req, res) => {
       return res.status(400).json({ error: 'Client name is required.' });
     }
 
+    // ============================================================
+    // WALLET BALANCE CHECK - Block uploads if insufficient balance
+    // ============================================================
+    const clientResult = await db.query(
+      'SELECT wallet_balance FROM clients WHERE client_name = $1',
+      [client_name]
+    );
+
+    if (clientResult.rows.length === 0) {
+      console.log(`⚠️ Client "${client_name}" not found in clients table.`);
+      return res.status(400).json({ error: 'Client not found. Please contact admin to set up your account.' });
+    }
+
+    const currentBalance = parseFloat(clientResult.rows[0].wallet_balance);
+    if (currentBalance < 11.00) {
+      console.log(`🚫 BLOCKED: Client "${client_name}" has ₹${currentBalance.toFixed(2)} — insufficient for calls (min ₹11.00 required).`);
+      return res.status(400).json({ error: 'Insufficient wallet balance. Please recharge.' });
+    }
+
+    console.log(`✅ WALLET CHECK PASSED: Client "${client_name}" has ₹${currentBalance.toFixed(2)} — proceeding with upload.`);
+
     // Parse Excel file
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
