@@ -4,24 +4,33 @@ const db = require('./config/database');
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Hitman Supari Function - Ye Vapi ko call lagane bolega
-const triggerVapiCall = async (customerName, phoneNumber) => {
+const triggerVapiCall = async (customerName, phoneNumber, customData = {}) => {
   try {
+    const payload = {
+      phoneNumberId: "2443e5bf-1eee-45e3-b332-759cf642a3ce",
+      customer: {
+        number: `+91${phoneNumber}`,
+        name: customerName
+      },
+      // TERE ASSISTANT KA ID
+      assistantId: "eebc18ca-c6e8-444d-aefc-23f1f921d709"
+    };
+
+    // If custom data exists, pass it as variable values for Vapi AI prompt
+    if (customData && Object.keys(customData).length > 0) {
+      payload.assistantOverrides = {
+        variableValues: customData
+      };
+      console.log(`📋 Custom Vapi vars for ${customerName}:`, JSON.stringify(customData));
+    }
+
     const response = await fetch('https://api.vapi.ai/call/phone', {
       method: 'POST',
       headers: {
-        // APNI API KEY (Bhai isko kisi ke sath share mat karna aage se)
         'Authorization': `Bearer c7fcdfd4-6b51-4a75-a454-e9e617a4a025`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        phoneNumberId: "2443e5bf-1eee-45e3-b332-759cf642a3ce",
-        customer: {
-          number: `+91${phoneNumber}`,
-          name: customerName
-        },
-        // TERE ASSISTANT KA ID
-        assistantId: "eebc18ca-c6e8-444d-aefc-23f1f921d709"
-      })
+      body: JSON.stringify(payload)
     });
 
     // Check agar Vapi ne error diya toh
@@ -74,8 +83,8 @@ const processQueue = async () => {
         continue;
       }
 
-      // 2. Trigger Vapi
-      const success = await triggerVapiCall(lead.customerName, lead.phoneNumber);
+      // 2. Trigger Vapi with custom data
+      const success = await triggerVapiCall(lead.customerName, lead.phoneNumber, lead.customData || {});
 
       if (success) {
         // Update to CALLING (We'll use YELLOW to denote in progress since the DB ENUM only has PENDING, YELLOW, GREEN, RED)

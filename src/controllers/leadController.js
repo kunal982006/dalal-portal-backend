@@ -1,17 +1,16 @@
-const xlsx = require('xlsx');
 const db = require('../config/database');
 const { addToQueue } = require('../queueManager');
 
 const uploadLeads = async (req, res) => {
   try {
-    if (!req.file) {
-      console.log('⚠️ No file provided. Empty hands!');
-      return res.status(400).json({ error: 'Please upload an Excel file.' });
-    }
+    const { email, leads } = req.body;
 
-    const { email } = req.body;
     if (!email) {
       return res.status(400).json({ error: 'User email is required.' });
+    }
+
+    if (!leads || !Array.isArray(leads) || leads.length === 0) {
+      return res.status(400).json({ error: 'No leads data provided.' });
     }
 
     // ============================================================
@@ -35,16 +34,6 @@ const uploadLeads = async (req, res) => {
 
     console.log(`✅ WALLET CHECK PASSED: User "${email}" has ₹${currentBalance.toFixed(2)} — proceeding with upload.`);
 
-    // Parse Excel file
-    const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const data = xlsx.utils.sheet_to_json(sheet);
-
-    if (data.length === 0) {
-      return res.status(400).json({ error: 'The uploaded file is empty.' });
-    }
-
     // Generate unique batch ID
     const now = new Date();
     const day = String(now.getDate()).padStart(2, '0');
@@ -54,41 +43,41 @@ const uploadLeads = async (req, res) => {
     const minutes = String(now.getMinutes()).padStart(2, '0');
     const batchId = `Batch_${day}${month}${year}_${hours}${minutes}`;
 
-    console.log(`📈 Processing ${data.length} potential murgas for user: ${email} in batch: ${batchId}...`);
+    console.log(`📈 Processing ${leads.length} leads for user: ${email} in batch: ${batchId}...`);
 
     let addedCount = 0;
     const leadsToQueue = [];
 
-    for (const row of data) {
-      const customerName = row['Customer Name'] || row['Name'] || row['customer_name'] || row['client_name'];
-      const phoneNumber = row['Phone Number'] || row['Phone'] || row['phone_number'];
+    for (const lead of leads) {
+      const { customerName, phoneNumber, customData } = lead;
 
       if (customerName && phoneNumber) {
         const cleanPhone = String(phoneNumber).trim();
+        const customDataJson = customData && Object.keys(customData).length > 0 ? JSON.stringify(customData) : null;
+
         try {
-          // 1. Pehle murga tahkhane mein lock karo (PENDING status ke sath)
           await db.query(
-            "INSERT INTO leads (email, customer_name, phone_number, status, batch_id) VALUES ($1, $2, $3, 'PENDING', $4)",
-            [email, customerName, cleanPhone, batchId]
+            "INSERT INTO leads (email, customer_name, phone_number, status, batch_id, custom_data) VALUES ($1, $2, $3, 'PENDING', $4, $5)",
+            [email, customerName, cleanPhone, batchId, customDataJson]
           );
           
-          leadsToQueue.push({ customerName, phoneNumber: cleanPhone, email });
+          leadsToQueue.push({ customerName, phoneNumber: cleanPhone, email, customData: customData || {} });
           addedCount++;
 
         } catch (err) {
-          console.error(`❌ Failed to insert lead ${customerName} into Tahkhana:`, err.message);
+          console.error(`❌ Failed to insert lead ${customerName}:`, err.message);
         }
       }
     }
 
-    console.log(`✅ Success! ${addedCount} murgas locked. Pushing to queue...`);
+    console.log(`✅ Success! ${addedCount} leads inserted. Pushing to queue...`);
     addToQueue(leadsToQueue);
     
     res.status(200).json({ message: `Successfully queued ${addedCount} leads for calling.` });
 
   } catch (error) {
     console.error('🔥 CRITICAL: Failed to process leads upload:', error);
-    res.status(500).json({ error: 'Internal server error processing the file.' });
+    res.status(500).json({ error: 'Internal server error processing the leads.' });
   }
 };
 
@@ -119,7 +108,7 @@ const singleDial = async (req, res) => {
 const getLeads = async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT id, email, customer_name, phone_number, status, batch_id, recording_url, transcript_summary, created_at FROM leads ORDER BY created_at DESC'
+      'SELECT id, email, customer_name, phone_number, status, batch_id, recording_url, transcript_summary, custom_data, created_at FROM leads ORDER BY created_at DESC'
     );
     res.status(200).json(result.rows);
   } catch (error) {
