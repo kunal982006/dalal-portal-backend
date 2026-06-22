@@ -9,6 +9,7 @@ const leadRoutes = require('./routes/leadRoutes');
 const webhookRoutes = require('./routes/webhookRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const toolRoutes = require('./routes/toolRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -23,6 +24,7 @@ app.use('/api/leads', leadRoutes);
 app.use('/api/webhook', webhookRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/tools', toolRoutes);
 
 // Health check
 app.get('/health', (req, res) => {

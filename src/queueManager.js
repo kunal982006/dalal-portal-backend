@@ -7,13 +7,13 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const triggerVapiCall = async (customerName, phoneNumber, customData = {}) => {
   try {
     const payload = {
-      phoneNumberId: "2443e5bf-1eee-45e3-b332-759cf642a3ce",
+      phoneNumberId: process.env.VAPI_PHONE_NUMBER_ID || "2443e5bf-1eee-45e3-b332-759cf642a3ce",
       customer: {
         number: `+91${phoneNumber}`,
         name: customerName
       },
       // TERE ASSISTANT KA ID
-      assistantId: "eebc18ca-c6e8-444d-aefc-23f1f921d709"
+      assistantId: process.env.VAPI_ASSISTANT_ID || "eebc18ca-c6e8-444d-aefc-23f1f921d709"
     };
 
     // If custom data exists, pass it as variable values for Vapi AI prompt
@@ -27,7 +27,7 @@ const triggerVapiCall = async (customerName, phoneNumber, customData = {}) => {
     const response = await fetch('https://api.vapi.ai/call/phone', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer c7fcdfd4-6b51-4a75-a454-e9e617a4a025`,
+        'Authorization': `Bearer ${process.env.VAPI_PRIVATE_KEY || 'c7fcdfd4-6b51-4a75-a454-e9e617a4a025'}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
