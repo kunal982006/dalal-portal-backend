@@ -28,7 +28,6 @@ const handleVapiWebhook = async (req, res) => {
 
       // ============================================================
       // EXTRACT STRUCTURED DATA (from VAPI Analysis → Structured Outputs)
-      // This is where call_outcome and call_summary fields live
       // ============================================================
       const structuredData = message.analysis?.structuredData 
         || message.call?.analysis?.structuredData 
@@ -37,14 +36,20 @@ const handleVapiWebhook = async (req, res) => {
       const callOutcome = structuredData.call_outcome || '';
       const structuredSummary = structuredData.call_summary || '';
 
-      // Try ALL possible paths where Vapi might put the summary/analysis
+      // ============================================================
+      // AI SUMMARY - Only use actual AI-generated summaries, NOT raw transcript!
+      // Raw transcript is the full conversation text - that's NOT a summary.
+      // ============================================================
       const callSummary = structuredSummary
         || message.analysis?.summary 
         || message.call?.analysis?.summary 
         || message.artifact?.summary
         || message.call?.artifact?.summary
         || message.summary 
-        || message.transcript 
+        || '';  // DO NOT fall back to transcript — it's not a summary!
+
+      // Raw transcript (kept separate, only for keyword matching fallback)
+      const rawTranscript = message.transcript 
         || message.call?.transcript
         || message.artifact?.transcript
         || '';
@@ -58,60 +63,91 @@ const handleVapiWebhook = async (req, res) => {
         || message.call?.artifact?.recordingUrl
         || null;
 
+      // Success evaluation from VAPI (now enabled)
+      const successEval = (message.analysis?.successEvaluation 
+        || message.call?.analysis?.successEvaluation 
+        || '').toLowerCase().trim();
+
       // Log extracted values for debugging
       console.log('🔍 EXTRACTED VALUES:');
       console.log('  Phone:', customerPhone);
       console.log('  Structured Data:', JSON.stringify(structuredData));
       console.log('  call_outcome:', callOutcome || '⚠️ EMPTY');
       console.log('  call_summary:', structuredSummary || '⚠️ EMPTY');
-      console.log('  Fallback Summary:', callSummary || '⚠️ EMPTY');
+      console.log('  AI Summary:', callSummary || '⚠️ EMPTY');
+      console.log('  Raw Transcript:', rawTranscript ? `(${rawTranscript.length} chars)` : '⚠️ EMPTY');
+      console.log('  Success Evaluation:', successEval || '⚠️ EMPTY');
       console.log('  Duration:', callDuration, 'seconds');
       console.log('  Recording URL:', recordingUrl || '⚠️ EMPTY');
-      console.log('  Analysis object:', JSON.stringify(message.analysis || message.call?.analysis || 'NOT FOUND'));
-      console.log('  Artifact object:', JSON.stringify(message.artifact || message.call?.artifact || 'NOT FOUND'));
+      console.log('  Full Analysis:', JSON.stringify(message.analysis || message.call?.analysis || 'NOT FOUND'));
 
       // ============================================================
       // STATUS CLASSIFICATION
-      // Priority 1: Use call_outcome from VAPI Structured Outputs
-      // Priority 2: Fall back to keyword matching on summary text
+      // Priority 1: Use call_outcome from Structured Outputs
+      // Priority 2: Use successEvaluation from VAPI
+      // Priority 3: Keyword match on AI summary
+      // Priority 4: Keyword match on raw transcript
       // ============================================================
-      let newStatus = 'YELLOW'; // Default: Follow-up / attempted but unsure
+      let newStatus = 'YELLOW'; // Default: Follow-up
+      let statusSource = 'default';
 
       const outcomeLower = callOutcome.toLowerCase().trim();
 
+      // Priority 1: Structured output call_outcome
       if (outcomeLower === 'not_interested' || outcomeLower === 'not interested') {
         newStatus = 'RED';
+        statusSource = 'structured_output';
       } else if (outcomeLower === 'interested') {
         newStatus = 'GREEN';
+        statusSource = 'structured_output';
       } else if (outcomeLower === 'follow_up' || outcomeLower === 'follow up') {
         newStatus = 'YELLOW';
+        statusSource = 'structured_output';
       } else if (outcomeLower === 'no_answer' || outcomeLower === 'no answer') {
         newStatus = 'YELLOW';
-      } else if (callSummary) {
-        // Fallback: keyword matching on summary text
-        // CRITICAL: Check "not interested" BEFORE "interested" because
-        // "not interested" contains the substring "interested"!
-        const summaryLower = callSummary.toLowerCase();
-
-        if (summaryLower.includes('not interested') 
-          || summaryLower.includes('do not call') 
-          || summaryLower.includes('don\'t call')
-          || summaryLower.includes('not looking')
-          || summaryLower.includes('refused')
-          || summaryLower.includes('rejected')
-          || summaryLower.includes('no interest')
-          || summaryLower.includes('not willing')) {
-          newStatus = 'RED';
-        } else if (summaryLower.includes('interested') 
-          || summaryLower.includes('positive') 
-          || summaryLower.includes('willing')
-          || summaryLower.includes('agreed')
-          || summaryLower.includes('wants to proceed')) {
-          newStatus = 'GREEN';
+        statusSource = 'structured_output';
+      } 
+      // Priority 2: Success evaluation
+      else if (successEval === 'false' || successEval === 'unsuccessful') {
+        newStatus = 'RED';
+        statusSource = 'success_evaluation';
+      } else if (successEval === 'true' || successEval === 'successful') {
+        newStatus = 'GREEN';
+        statusSource = 'success_evaluation';
+      } 
+      // Priority 3 & 4: Keyword matching on summary or transcript
+      else {
+        const textToAnalyze = (callSummary || rawTranscript).toLowerCase();
+        if (textToAnalyze) {
+          // CRITICAL: Check negative keywords FIRST
+          if (textToAnalyze.includes('not interested') 
+            || textToAnalyze.includes('do not call') 
+            || textToAnalyze.includes("don't call")
+            || textToAnalyze.includes('not looking')
+            || textToAnalyze.includes('refused')
+            || textToAnalyze.includes('rejected')
+            || textToAnalyze.includes('no interest')
+            || textToAnalyze.includes('not willing')
+            || textToAnalyze.includes('nahi chahiye')
+            || textToAnalyze.includes('interest nahi')
+            || textToAnalyze.includes('mat karo call')
+            || textToAnalyze.includes('dobara mat')) {
+            newStatus = 'RED';
+            statusSource = 'keyword_matching';
+          } else if (textToAnalyze.includes('interested') 
+            || textToAnalyze.includes('positive') 
+            || textToAnalyze.includes('willing')
+            || textToAnalyze.includes('agreed')
+            || textToAnalyze.includes('wants to proceed')
+            || textToAnalyze.includes('haan')
+            || textToAnalyze.includes('chahiye')) {
+            newStatus = 'GREEN';
+            statusSource = 'keyword_matching';
+          }
         }
       }
 
-      console.log(`🏷️ Status classified as: ${newStatus} (source: ${callOutcome ? 'structured_output' : 'keyword_matching'})`);
+      console.log(`🏷️ Status classified as: ${newStatus} (source: ${statusSource})`);
 
       if (customerPhone) {
         // Clean up phone number format if needed to match DB
