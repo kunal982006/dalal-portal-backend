@@ -88,13 +88,21 @@ const processQueue = async () => {
 
       if (success) {
         // Update to CALLING (We'll use YELLOW to denote in progress since the DB ENUM only has PENDING, YELLOW, GREEN, RED)
-        await db.query("UPDATE leads SET status = 'YELLOW' WHERE phone_number LIKE '%' || $1 || '%'", [lead.phoneNumber.slice(-10)]);
+        if (lead.id) {
+          await db.query("UPDATE leads SET status = 'YELLOW', updated_at = CURRENT_TIMESTAMP WHERE id = $1", [lead.id]);
+        } else {
+          await db.query("UPDATE leads SET status = 'YELLOW', updated_at = CURRENT_TIMESTAMP WHERE phone_number LIKE '%' || $1 || '%'", [lead.phoneNumber.slice(-10)]);
+        }
         
         console.log(`⏳ Sleeping for 45s to respect Vapi limits...`);
         await sleep(45000);
         console.log(`⏰ Woke up, moving to the next murga...`);
       } else {
-        await db.query("UPDATE leads SET status = 'RED' WHERE phone_number LIKE '%' || $1 || '%'", [lead.phoneNumber.slice(-10)]);
+        if (lead.id) {
+          await db.query("UPDATE leads SET status = 'RED', updated_at = CURRENT_TIMESTAMP WHERE id = $1", [lead.id]);
+        } else {
+          await db.query("UPDATE leads SET status = 'RED', updated_at = CURRENT_TIMESTAMP WHERE phone_number LIKE '%' || $1 || '%'", [lead.phoneNumber.slice(-10)]);
+        }
       }
     } catch (err) {
       console.error(`🔥 Error processing queue item for ${lead.customerName}:`, err);

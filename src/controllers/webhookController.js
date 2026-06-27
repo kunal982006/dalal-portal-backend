@@ -154,14 +154,22 @@ const handleVapiWebhook = async (req, res) => {
         const cleanPhone = customerPhone.slice(-10);
 
         const result = await db.query(
-          "UPDATE leads SET status = $1, recording_url = $2, transcript_summary = $3, updated_at = CURRENT_TIMESTAMP WHERE phone_number LIKE '%' || $4 || '%' AND status != 'GREEN'",
+          `UPDATE leads 
+           SET status = $1, recording_url = $2, transcript_summary = $3, updated_at = CURRENT_TIMESTAMP 
+           WHERE id = (
+             SELECT id FROM leads 
+             WHERE phone_number LIKE '%' || $4 || '%' 
+               AND status IN ('YELLOW', 'PENDING')
+             ORDER BY updated_at DESC 
+             LIMIT 1
+           )`,
           [newStatus, recordingUrl, callSummary || null, cleanPhone]
         );
 
         if (result.rowCount > 0) {
           console.log(`🎯 Boom! Lead with phone ending in ${cleanPhone} → ${newStatus}.`);
         } else {
-          console.log(`👻 Ghost lead? Phone ending in ${cleanPhone} not found or already GREEN.`);
+          console.log(`👻 Ghost lead? Phone ending in ${cleanPhone} not found or not in YELLOW/PENDING status.`);
         }
 
         // ============================================================

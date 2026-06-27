@@ -56,12 +56,13 @@ const uploadLeads = async (req, res) => {
         const customDataJson = customData && Object.keys(customData).length > 0 ? JSON.stringify(customData) : null;
 
         try {
-          await db.query(
-            "INSERT INTO leads (email, customer_name, phone_number, status, batch_id, custom_data) VALUES ($1, $2, $3, 'PENDING', $4, $5)",
+          const insertResult = await db.query(
+            "INSERT INTO leads (email, customer_name, phone_number, status, batch_id, custom_data) VALUES ($1, $2, $3, 'PENDING', $4, $5) RETURNING id",
             [email, customerName, cleanPhone, batchId, customDataJson]
           );
           
-          leadsToQueue.push({ customerName, phoneNumber: cleanPhone, email, customData: customData || {} });
+          const newId = insertResult.rows[0].id;
+          leadsToQueue.push({ id: newId, customerName, phoneNumber: cleanPhone, email, customData: customData || {} });
           addedCount++;
 
         } catch (err) {
@@ -91,12 +92,13 @@ const singleDial = async (req, res) => {
     const cleanPhone = String(phoneNumber).trim();
     const batchId = 'Single_Dial';
 
-    await db.query(
-      "INSERT INTO leads (email, customer_name, phone_number, status, batch_id) VALUES ($1, $2, $3, 'PENDING', $4)",
+    const insertResult = await db.query(
+      "INSERT INTO leads (email, customer_name, phone_number, status, batch_id) VALUES ($1, $2, $3, 'PENDING', $4) RETURNING id",
       [email, customerName, cleanPhone, batchId]
     );
 
-    addToQueue([{ customerName, phoneNumber: cleanPhone, email }]);
+    const newId = insertResult.rows[0].id;
+    addToQueue([{ id: newId, customerName, phoneNumber: cleanPhone, email }]);
 
     res.status(200).json({ message: "Target added to queue!" });
   } catch (error) {
