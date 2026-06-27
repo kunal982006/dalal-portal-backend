@@ -7,25 +7,111 @@ const handleVapiWebhook = async (req, res) => {
     // Respond immediately to Vapi to prevent timeouts
     res.status(200).send('Webhook received');
 
+    // ============================================================
+    // DEBUG: Log the FULL webhook payload so we can see what Vapi sends
+    // ============================================================
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('📩 VAPI WEBHOOK RECEIVED');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('Full Payload:', JSON.stringify(payload, null, 2));
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
     // Extract necessary info from Vapi payload
     // Vapi structure typically puts call details in payload.message
     const message = payload.message || payload;
     const type = message.type;
 
+    console.log(`📋 Webhook type: ${type}`);
+
     if (type === 'end-of-call-report') {
       const customerPhone = message.call?.customer?.number || message.customer?.number;
-      const callSummary = message.analysis?.summary || message.summary || '';
-      const callDuration = message.duration || message.call?.duration || 0; // in seconds
-      const recordingUrl = message.recordingUrl || null;
 
-      // Basic logic to classify lead based on summary text or tags
-      let newStatus = 'YELLOW'; // Default: Attempted but unsure
+      // ============================================================
+      // EXTRACT STRUCTURED DATA (from VAPI Analysis → Structured Outputs)
+      // This is where call_outcome and call_summary fields live
+      // ============================================================
+      const structuredData = message.analysis?.structuredData 
+        || message.call?.analysis?.structuredData 
+        || {};
 
-      if (callSummary.toLowerCase().includes('interested') || callSummary.toLowerCase().includes('positive')) {
-        newStatus = 'GREEN';
-      } else if (callSummary.toLowerCase().includes('not interested') || callSummary.toLowerCase().includes('do not call')) {
+      const callOutcome = structuredData.call_outcome || '';
+      const structuredSummary = structuredData.call_summary || '';
+
+      // Try ALL possible paths where Vapi might put the summary/analysis
+      const callSummary = structuredSummary
+        || message.analysis?.summary 
+        || message.call?.analysis?.summary 
+        || message.artifact?.summary
+        || message.call?.artifact?.summary
+        || message.summary 
+        || message.transcript 
+        || message.call?.transcript
+        || message.artifact?.transcript
+        || '';
+
+      const callDuration = message.call?.duration || message.duration || 0;
+
+      // Try ALL possible paths for recording URL
+      const recordingUrl = message.recordingUrl 
+        || message.call?.recordingUrl 
+        || message.artifact?.recordingUrl
+        || message.call?.artifact?.recordingUrl
+        || null;
+
+      // Log extracted values for debugging
+      console.log('🔍 EXTRACTED VALUES:');
+      console.log('  Phone:', customerPhone);
+      console.log('  Structured Data:', JSON.stringify(structuredData));
+      console.log('  call_outcome:', callOutcome || '⚠️ EMPTY');
+      console.log('  call_summary:', structuredSummary || '⚠️ EMPTY');
+      console.log('  Fallback Summary:', callSummary || '⚠️ EMPTY');
+      console.log('  Duration:', callDuration, 'seconds');
+      console.log('  Recording URL:', recordingUrl || '⚠️ EMPTY');
+      console.log('  Analysis object:', JSON.stringify(message.analysis || message.call?.analysis || 'NOT FOUND'));
+      console.log('  Artifact object:', JSON.stringify(message.artifact || message.call?.artifact || 'NOT FOUND'));
+
+      // ============================================================
+      // STATUS CLASSIFICATION
+      // Priority 1: Use call_outcome from VAPI Structured Outputs
+      // Priority 2: Fall back to keyword matching on summary text
+      // ============================================================
+      let newStatus = 'YELLOW'; // Default: Follow-up / attempted but unsure
+
+      const outcomeLower = callOutcome.toLowerCase().trim();
+
+      if (outcomeLower === 'not_interested' || outcomeLower === 'not interested') {
         newStatus = 'RED';
+      } else if (outcomeLower === 'interested') {
+        newStatus = 'GREEN';
+      } else if (outcomeLower === 'follow_up' || outcomeLower === 'follow up') {
+        newStatus = 'YELLOW';
+      } else if (outcomeLower === 'no_answer' || outcomeLower === 'no answer') {
+        newStatus = 'YELLOW';
+      } else if (callSummary) {
+        // Fallback: keyword matching on summary text
+        // CRITICAL: Check "not interested" BEFORE "interested" because
+        // "not interested" contains the substring "interested"!
+        const summaryLower = callSummary.toLowerCase();
+
+        if (summaryLower.includes('not interested') 
+          || summaryLower.includes('do not call') 
+          || summaryLower.includes('don\'t call')
+          || summaryLower.includes('not looking')
+          || summaryLower.includes('refused')
+          || summaryLower.includes('rejected')
+          || summaryLower.includes('no interest')
+          || summaryLower.includes('not willing')) {
+          newStatus = 'RED';
+        } else if (summaryLower.includes('interested') 
+          || summaryLower.includes('positive') 
+          || summaryLower.includes('willing')
+          || summaryLower.includes('agreed')
+          || summaryLower.includes('wants to proceed')) {
+          newStatus = 'GREEN';
+        }
       }
+
+      console.log(`🏷️ Status classified as: ${newStatus} (source: ${callOutcome ? 'structured_output' : 'keyword_matching'})`);
 
       if (customerPhone) {
         // Clean up phone number format if needed to match DB
@@ -33,11 +119,11 @@ const handleVapiWebhook = async (req, res) => {
 
         const result = await db.query(
           "UPDATE leads SET status = $1, recording_url = $2, transcript_summary = $3, updated_at = CURRENT_TIMESTAMP WHERE phone_number LIKE '%' || $4 || '%' AND status != 'GREEN'",
-          [newStatus, recordingUrl, callSummary, cleanPhone]
+          [newStatus, recordingUrl, callSummary || null, cleanPhone]
         );
 
         if (result.rowCount > 0) {
-          console.log(`🎯 Boom! Tahkhana updated. Lead with phone ending in ${cleanPhone} moved to ${newStatus}.`);
+          console.log(`🎯 Boom! Lead with phone ending in ${cleanPhone} → ${newStatus}.`);
         } else {
           console.log(`👻 Ghost lead? Phone ending in ${cleanPhone} not found or already GREEN.`);
         }
@@ -90,6 +176,8 @@ const handleVapiWebhook = async (req, res) => {
             console.log(`⚠️ Could not find lead with phone ${cleanPhone} for wallet deduction.`);
           }
         }
+      } else {
+        console.log('⚠️ No customer phone found in webhook payload!');
       }
     } else {
       console.log(`ℹ️ Ignored Vapi webhook type: ${type}`);
