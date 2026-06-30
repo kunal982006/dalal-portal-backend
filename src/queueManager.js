@@ -14,6 +14,52 @@ const CALL_TIMEOUT_MS = parseInt(process.env.CALL_TIMEOUT_MS, 10) || 300000; // 
 // Handles multiple calls to the exact same phone number concurrently.
 const pendingCalls = new Map();
 
+// ── Vapi Call Trigger ───────────────────────────────────────
+const triggerVapiCall = async (customerName, phoneNumber, customData = {}) => {
+  try {
+    const payload = {
+      phoneNumberId: process.env.VAPI_PHONE_NUMBER_ID || '2443e5bf-1eee-45e3-b332-759cf642a3ce',
+      customer: {
+        number: `+91${phoneNumber}`,
+        name: customerName
+      },
+      assistantId: process.env.VAPI_ASSISTANT_ID || 'eebc18ca-c6e8-444d-aefc-23f1f921d709'
+    };
+
+    if (customData && Object.keys(customData).length > 0) {
+      payload.assistantOverrides = {
+        variableValues: customData
+      };
+      console.log(`📋 Custom Vapi vars for ${customerName}:`, JSON.stringify(customData));
+    }
+
+    const response = await fetch('https://api.vapi.ai/call/phone', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.VAPI_PRIVATE_KEY || 'c7fcdfd4-6b51-4a75-a454-e9e617a4a025'}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errData = await response.json();
+      console.error(`❌ Vapi API Error for ${customerName}:`, errData);
+      return false;
+    }
+
+    console.log(`📞 Call fired for ${customerName} on ${phoneNumber}`);
+    return true;
+  } catch (err) {
+    console.error(`❌ Failed to trigger Vapi call for ${customerName}:`, err.message);
+    return false;
+  }
+};
+
+// ── Queue State ─────────────────────────────────────────────
+const callQueue = [];
+let isProcessing = false;
+
 // ── Resolve a Pending Call (called from webhookController) ──
 const resolveCall = (phoneNumber) => {
   const cleanPhone = String(phoneNumber).slice(-10);
