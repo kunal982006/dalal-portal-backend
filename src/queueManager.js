@@ -10,68 +10,30 @@ const BATCH_SIZE = parseInt(process.env.BATCH_SIZE, 10) || 10;
 const CALL_TIMEOUT_MS = parseInt(process.env.CALL_TIMEOUT_MS, 10) || 300000; // 5 minutes
 
 // ── Active Call Tracker ─────────────────────────────────────
-// Map<cleanPhone, { resolve, timer, leadId, customerName }>
-// When a webhook arrives for a phone, we resolve its promise
-// so the batch knows that call is done.
+// Map<cleanPhone, Array<{ resolve, timer, leadId, customerName }>>
+// Handles multiple calls to the exact same phone number concurrently.
 const pendingCalls = new Map();
-
-// ── Vapi Call Trigger ───────────────────────────────────────
-const triggerVapiCall = async (customerName, phoneNumber, customData = {}) => {
-  try {
-    const payload = {
-      phoneNumberId: process.env.VAPI_PHONE_NUMBER_ID || '2443e5bf-1eee-45e3-b332-759cf642a3ce',
-      customer: {
-        number: `+91${phoneNumber}`,
-        name: customerName
-      },
-      assistantId: process.env.VAPI_ASSISTANT_ID || 'eebc18ca-c6e8-444d-aefc-23f1f921d709'
-    };
-
-    if (customData && Object.keys(customData).length > 0) {
-      payload.assistantOverrides = {
-        variableValues: customData
-      };
-      console.log(`📋 Custom Vapi vars for ${customerName}:`, JSON.stringify(customData));
-    }
-
-    const response = await fetch('https://api.vapi.ai/call/phone', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.VAPI_PRIVATE_KEY || 'c7fcdfd4-6b51-4a75-a454-e9e617a4a025'}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-      const errData = await response.json();
-      console.error(`❌ Vapi API Error for ${customerName}:`, errData);
-      return false;
-    }
-
-    console.log(`📞 Call fired for ${customerName} on ${phoneNumber}`);
-    return true;
-  } catch (err) {
-    console.error(`❌ Failed to trigger Vapi call for ${customerName}:`, err.message);
-    return false;
-  }
-};
-
-// ── Queue State ─────────────────────────────────────────────
-const callQueue = [];
-let isProcessing = false;
 
 // ── Resolve a Pending Call (called from webhookController) ──
 const resolveCall = (phoneNumber) => {
   const cleanPhone = String(phoneNumber).slice(-10);
 
   if (pendingCalls.has(cleanPhone)) {
-    const entry = pendingCalls.get(cleanPhone);
-    clearTimeout(entry.timer);
-    pendingCalls.delete(cleanPhone);
-    console.log(`✅ Call completed for ${entry.customerName} (${cleanPhone}) — resolved via webhook`);
-    entry.resolve('webhook');
-    return true;
+    const entries = pendingCalls.get(cleanPhone);
+    if (entries && entries.length > 0) {
+      // Grab the oldest call for this phone number
+      const entry = entries.shift();
+      
+      clearTimeout(entry.timer);
+      console.log(`✅ Call completed for ${entry.customerName} (${cleanPhone}) — resolved via webhook`);
+      entry.resolve('webhook');
+      
+      // If no more calls for this number, delete the map key
+      if (entries.length === 0) {
+        pendingCalls.delete(cleanPhone);
+      }
+      return true;
+    }
   }
 
   return false;
@@ -128,13 +90,23 @@ const processLead = async (lead) => {
     const completionPromise = new Promise((resolve) => {
       const timer = setTimeout(() => {
         if (pendingCalls.has(cleanPhone)) {
-          pendingCalls.delete(cleanPhone);
-          console.log(`⏰ Timeout for ${lead.customerName} (${cleanPhone}) — no webhook received in ${CALL_TIMEOUT_MS / 1000}s`);
-          resolve('timeout');
+          const entries = pendingCalls.get(cleanPhone);
+          const index = entries.findIndex(e => e.leadId === lead.id);
+          
+          if (index !== -1) {
+            entries.splice(index, 1);
+            if (entries.length === 0) pendingCalls.delete(cleanPhone);
+            console.log(`⏰ Timeout for ${lead.customerName} (${cleanPhone}) — no webhook received in ${CALL_TIMEOUT_MS / 1000}s`);
+            resolve('timeout');
+          }
         }
       }, CALL_TIMEOUT_MS);
 
-      pendingCalls.set(cleanPhone, {
+      if (!pendingCalls.has(cleanPhone)) {
+        pendingCalls.set(cleanPhone, []);
+      }
+      
+      pendingCalls.get(cleanPhone).push({
         resolve,
         timer,
         leadId: lead.id,
