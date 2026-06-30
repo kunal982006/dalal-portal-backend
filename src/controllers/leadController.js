@@ -125,13 +125,21 @@ const getClientBalance = async (req, res) => {
     if (!email) {
       return res.status(400).json({ error: 'Email is required.' });
     }
-    const result = await db.query(
+    let result = await db.query(
       'SELECT wallet_balance FROM clients WHERE email = $1',
       [email]
     );
+    
+    // Auto-register new users with 0 balance
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Client not found' });
+      console.log(`🆕 New user detected (${email}), auto-registering in clients table.`);
+      const insertResult = await db.query(
+        'INSERT INTO clients (email, wallet_balance) VALUES ($1, 0.00) RETURNING wallet_balance',
+        [email]
+      );
+      result = insertResult;
     }
+    
     res.status(200).json({ wallet_balance: parseFloat(result.rows[0].wallet_balance) });
   } catch (error) {
     console.error('🔥 Failed to fetch client balance:', error);

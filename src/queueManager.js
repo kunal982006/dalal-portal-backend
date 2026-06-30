@@ -1,22 +1,32 @@
 const db = require('./config/database');
 
-// Jugaad Queue - Simple delay helper to dodge Vapi's 429 rate limit
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+// ═══════════════════════════════════════════════════════════════
+// BATCH CONCURRENT QUEUE MANAGER
+// Fires BATCH_SIZE calls concurrently, waits for ALL to finish
+// (via webhook or timeout), then fires the next batch.
+// ═══════════════════════════════════════════════════════════════
 
-// Hitman Supari Function - Ye Vapi ko call lagane bolega
+const BATCH_SIZE = parseInt(process.env.BATCH_SIZE, 10) || 10;
+const CALL_TIMEOUT_MS = parseInt(process.env.CALL_TIMEOUT_MS, 10) || 300000; // 5 minutes
+
+// ── Active Call Tracker ─────────────────────────────────────
+// Map<cleanPhone, { resolve, timer, leadId, customerName }>
+// When a webhook arrives for a phone, we resolve its promise
+// so the batch knows that call is done.
+const pendingCalls = new Map();
+
+// ── Vapi Call Trigger ───────────────────────────────────────
 const triggerVapiCall = async (customerName, phoneNumber, customData = {}) => {
   try {
     const payload = {
-      phoneNumberId: process.env.VAPI_PHONE_NUMBER_ID || "2443e5bf-1eee-45e3-b332-759cf642a3ce",
+      phoneNumberId: process.env.VAPI_PHONE_NUMBER_ID || '2443e5bf-1eee-45e3-b332-759cf642a3ce',
       customer: {
         number: `+91${phoneNumber}`,
         name: customerName
       },
-      // TERE ASSISTANT KA ID
-      assistantId: process.env.VAPI_ASSISTANT_ID || "eebc18ca-c6e8-444d-aefc-23f1f921d709"
+      assistantId: process.env.VAPI_ASSISTANT_ID || 'eebc18ca-c6e8-444d-aefc-23f1f921d709'
     };
 
-    // If custom data exists, pass it as variable values for Vapi AI prompt
     if (customData && Object.keys(customData).length > 0) {
       payload.assistantOverrides = {
         variableValues: customData
@@ -33,95 +43,195 @@ const triggerVapiCall = async (customerName, phoneNumber, customData = {}) => {
       body: JSON.stringify(payload)
     });
 
-    // Check agar Vapi ne error diya toh
     if (!response.ok) {
       const errData = await response.json();
       console.error(`❌ Vapi API Error for ${customerName}:`, errData);
       return false;
     }
 
-    console.log(`📞 Supari Given! Vapi is hunting ${customerName} on ${phoneNumber}...`);
+    console.log(`📞 Call fired for ${customerName} on ${phoneNumber}`);
     return true;
   } catch (err) {
-    console.error(`❌ Vapi ko supari dene mein kalesh:`, err);
+    console.error(`❌ Failed to trigger Vapi call for ${customerName}:`, err.message);
     return false;
   }
 };
 
+// ── Queue State ─────────────────────────────────────────────
 const callQueue = [];
 let isProcessing = false;
 
+// ── Resolve a Pending Call (called from webhookController) ──
+const resolveCall = (phoneNumber) => {
+  const cleanPhone = String(phoneNumber).slice(-10);
+
+  if (pendingCalls.has(cleanPhone)) {
+    const entry = pendingCalls.get(cleanPhone);
+    clearTimeout(entry.timer);
+    pendingCalls.delete(cleanPhone);
+    console.log(`✅ Call completed for ${entry.customerName} (${cleanPhone}) — resolved via webhook`);
+    entry.resolve('webhook');
+    return true;
+  }
+
+  return false;
+};
+
+// ── Process a Single Lead Within a Batch ────────────────────
+const processLead = async (lead) => {
+  const cleanPhone = String(lead.phoneNumber).slice(-10);
+
+  try {
+    // 1. Check wallet balance
+    const clientResult = await db.query(
+      'SELECT wallet_balance FROM clients WHERE email = $1',
+      [lead.email]
+    );
+
+    if (clientResult.rows.length === 0) {
+      console.log(`⚠️ User "${lead.email}" not found. Skipping ${lead.customerName}.`);
+      await db.query(
+        "UPDATE leads SET status = 'RED', updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+        [lead.id]
+      );
+      return { status: 'skipped', reason: 'user_not_found', lead };
+    }
+
+    const currentBalance = parseFloat(clientResult.rows[0].wallet_balance);
+    if (currentBalance < 11.00) {
+      console.log(`🚫 Insufficient balance for "${lead.email}" (₹${currentBalance.toFixed(2)}). Skipping ${lead.customerName}.`);
+      await db.query(
+        "UPDATE leads SET status = 'RED', updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+        [lead.id]
+      );
+      return { status: 'skipped', reason: 'low_balance', lead };
+    }
+
+    // 2. Fire the Vapi call
+    const success = await triggerVapiCall(lead.customerName, lead.phoneNumber, lead.customData || {});
+
+    if (!success) {
+      await db.query(
+        "UPDATE leads SET status = 'RED', updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+        [lead.id]
+      );
+      return { status: 'failed', reason: 'vapi_error', lead };
+    }
+
+    // 3. Mark as YELLOW (in-progress) and wait for webhook
+    await db.query(
+      "UPDATE leads SET status = 'YELLOW', updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+      [lead.id]
+    );
+
+    // 4. Create a promise that resolves when webhook arrives or timeout hits
+    const completionPromise = new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (pendingCalls.has(cleanPhone)) {
+          pendingCalls.delete(cleanPhone);
+          console.log(`⏰ Timeout for ${lead.customerName} (${cleanPhone}) — no webhook received in ${CALL_TIMEOUT_MS / 1000}s`);
+          resolve('timeout');
+        }
+      }, CALL_TIMEOUT_MS);
+
+      pendingCalls.set(cleanPhone, {
+        resolve,
+        timer,
+        leadId: lead.id,
+        customerName: lead.customerName
+      });
+    });
+
+    // Wait for this call to complete
+    const result = await completionPromise;
+    return { status: 'completed', resolution: result, lead };
+
+  } catch (err) {
+    console.error(`🔥 Error processing ${lead.customerName}:`, err.message);
+    return { status: 'error', reason: err.message, lead };
+  }
+};
+
+// ── Process the Queue in Batches ────────────────────────────
 const processQueue = async () => {
   if (isProcessing) return;
   isProcessing = true;
 
-  console.log(`🚦 Queue Manager started. Items in queue: ${callQueue.length}`);
+  const totalLeads = callQueue.length;
+  const totalBatches = Math.ceil(totalLeads / BATCH_SIZE);
+
+  console.log('');
+  console.log('═══════════════════════════════════════════════════════');
+  console.log(`🚀 BATCH QUEUE STARTED`);
+  console.log(`   Total leads: ${totalLeads} | Batch size: ${BATCH_SIZE} | Batches: ${totalBatches}`);
+  console.log('═══════════════════════════════════════════════════════');
+
+  let batchNumber = 0;
 
   while (callQueue.length > 0) {
-    const lead = callQueue.shift(); // FIFO
-    console.log(`⚙️ Processing lead: ${lead.customerName} (${lead.phoneNumber}) for user ${lead.email}`);
+    batchNumber++;
+    const batch = callQueue.splice(0, BATCH_SIZE);
 
-    try {
-      // 1. Check Wallet Balance
-      const clientResult = await db.query(
-        'SELECT wallet_balance FROM clients WHERE email = $1',
-        [lead.email]
-      );
+    console.log('');
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`📦 BATCH ${batchNumber}/${totalBatches} — Firing ${batch.length} calls concurrently`);
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 
-      if (clientResult.rows.length === 0) {
-        console.log(`⚠️ User "${lead.email}" not found in clients table. Skipping call.`);
-        await db.query("UPDATE leads SET status = 'RED' WHERE phone_number LIKE '%' || $1 || '%'", [lead.phoneNumber.slice(-10)]);
-        continue;
-      }
+    // Fire ALL calls in this batch concurrently
+    const results = await Promise.allSettled(
+      batch.map(lead => processLead(lead))
+    );
 
-      const currentBalance = parseFloat(clientResult.rows[0].wallet_balance);
-      if (currentBalance < 11.00) {
-        console.log(`🚫 BLOCKED: User "${lead.email}" has insufficient balance (₹${currentBalance.toFixed(2)}). Skipping call.`);
-        // Update status to FAILED: LOW BALANCE (Using RED or a specific ENUM if you added one, but for now RED)
-        // Wait, the prompt says "update lead status to 'FAILED: LOW BALANCE'". The DB enum only allows 'PENDING', 'YELLOW', 'GREEN', 'RED'. I'll use 'RED' and log it, or if it's an ENUM I can't arbitrarily insert 'FAILED: LOW BALANCE' unless I ALTER the TYPE. I'll stick to 'RED' but add a comment, or maybe I should just keep it 'PENDING' so they can retry. The prompt specifically requested 'FAILED: LOW BALANCE', but since it's an ENUM I'll avoid breaking DB. I'll use 'RED' for now.
-        await db.query("UPDATE leads SET status = 'RED' WHERE phone_number LIKE '%' || $1 || '%'", [lead.phoneNumber.slice(-10)]);
-        continue;
-      }
-
-      // 2. Trigger Vapi with custom data
-      const success = await triggerVapiCall(lead.customerName, lead.phoneNumber, lead.customData || {});
-
-      if (success) {
-        // Update to CALLING (We'll use YELLOW to denote in progress since the DB ENUM only has PENDING, YELLOW, GREEN, RED)
-        if (lead.id) {
-          await db.query("UPDATE leads SET status = 'YELLOW', updated_at = CURRENT_TIMESTAMP WHERE id = $1", [lead.id]);
-        } else {
-          await db.query("UPDATE leads SET status = 'YELLOW', updated_at = CURRENT_TIMESTAMP WHERE phone_number LIKE '%' || $1 || '%'", [lead.phoneNumber.slice(-10)]);
-        }
-        
-        console.log(`⏳ Sleeping for 45s to respect Vapi limits...`);
-        await sleep(45000);
-        console.log(`⏰ Woke up, moving to the next murga...`);
+    // Log batch results
+    const summary = { completed: 0, skipped: 0, failed: 0, errors: 0 };
+    results.forEach((result) => {
+      if (result.status === 'fulfilled') {
+        const val = result.value;
+        if (val.status === 'completed') summary.completed++;
+        else if (val.status === 'skipped') summary.skipped++;
+        else if (val.status === 'failed') summary.failed++;
+        else summary.errors++;
       } else {
-        if (lead.id) {
-          await db.query("UPDATE leads SET status = 'RED', updated_at = CURRENT_TIMESTAMP WHERE id = $1", [lead.id]);
-        } else {
-          await db.query("UPDATE leads SET status = 'RED', updated_at = CURRENT_TIMESTAMP WHERE phone_number LIKE '%' || $1 || '%'", [lead.phoneNumber.slice(-10)]);
-        }
+        summary.errors++;
+        console.error(`🔥 Unexpected batch error:`, result.reason);
       }
-    } catch (err) {
-      console.error(`🔥 Error processing queue item for ${lead.customerName}:`, err);
+    });
+
+    console.log(`📊 BATCH ${batchNumber} RESULTS: ✅ ${summary.completed} completed | ⏭️ ${summary.skipped} skipped | ❌ ${summary.failed} failed | 🔥 ${summary.errors} errors`);
+
+    if (callQueue.length > 0) {
+      console.log(`⏳ Moving to next batch... (${callQueue.length} leads remaining)`);
     }
   }
 
+  console.log('');
+  console.log('═══════════════════════════════════════════════════════');
+  console.log('🏁 ALL BATCHES COMPLETE — Queue is empty');
+  console.log('═══════════════════════════════════════════════════════');
+  console.log('');
+
   isProcessing = false;
-  console.log('🏁 Queue Manager finished processing all items.');
 };
 
+// ── Public API ──────────────────────────────────────────────
 const addToQueue = (leadsArray) => {
   callQueue.push(...leadsArray);
-  console.log(`📥 Added ${leadsArray.length} leads to the queue. Total in queue: ${callQueue.length}`);
-  
+  console.log(`📥 Added ${leadsArray.length} leads to queue. Total pending: ${callQueue.length}`);
+
   if (!isProcessing) {
     processQueue();
   }
 };
 
+const getQueueStatus = () => ({
+  queueLength: callQueue.length,
+  isProcessing,
+  activeCalls: pendingCalls.size,
+  batchSize: BATCH_SIZE
+});
+
 module.exports = {
-  addToQueue
+  addToQueue,
+  resolveCall,
+  getQueueStatus,
 };

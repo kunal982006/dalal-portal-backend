@@ -48,14 +48,17 @@ const rechargeClient = async (req, res) => {
 
     const rechargeAmount = parseFloat(amount);
 
+    // UPSERT: Create client if they don't exist, otherwise update their balance
     const result = await db.query(
-      'UPDATE clients SET wallet_balance = wallet_balance + $1 WHERE email = $2 RETURNING wallet_balance',
+      `INSERT INTO clients (email, wallet_balance) 
+       VALUES ($2, $1)
+       ON CONFLICT (email) 
+       DO UPDATE SET 
+         wallet_balance = clients.wallet_balance + EXCLUDED.wallet_balance, 
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING wallet_balance`,
       [rechargeAmount, email]
     );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: `Client with email "${email}" not found.` });
-    }
 
     const newBalance = parseFloat(result.rows[0].wallet_balance);
     console.log(`💰 GOD MODE RECHARGE: ${email} topped up by ₹${rechargeAmount.toFixed(2)} → New Balance: ₹${newBalance.toFixed(2)}`);

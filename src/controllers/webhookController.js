@@ -1,27 +1,45 @@
 const db = require('../config/database');
+const { resolveCall } = require('../queueManager');
 
 const handleVapiWebhook = async (req, res) => {
   try {
     const payload = req.body;
-
-    // Respond immediately to Vapi to prevent timeouts
-    res.status(200).send('Webhook received');
+    const message = payload.message || payload;
+    const type = message.type;
 
     // ============================================================
     // DEBUG: Log the FULL webhook payload so we can see what Vapi sends
     // ============================================================
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('📩 VAPI WEBHOOK RECEIVED');
+    console.log(`📩 VAPI WEBHOOK RECEIVED: ${type}`);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+    // ============================================================
+    // 1. SYNCHRONOUS WEBHOOKS (Vapi expects a JSON response)
+    // ============================================================
+    if (type === 'transfer-destination-request') {
+      const forwardingNumber = process.env.FORWARDING_NUMBER || '+919999999999'; // Ensure this is in your .env
+      console.log(`🔀 Call Transfer Requested. Forwarding to: ${forwardingNumber}`);
+      
+      return res.status(200).json({
+        destination: {
+          type: 'number',
+          number: forwardingNumber
+        }
+      });
+    }
+
+    if (type === 'tool-calls') {
+      // If you add custom tools later, handle them here. For now, return empty so Vapi doesn't crash.
+      return res.status(200).json({ results: [] });
+    }
+
+    // ============================================================
+    // 2. ASYNCHRONOUS WEBHOOKS (Acknowledge immediately to prevent timeouts)
+    // ============================================================
+    res.status(200).send('Webhook received');
     console.log('Full Payload:', JSON.stringify(payload, null, 2));
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-    // Extract necessary info from Vapi payload
-    // Vapi structure typically puts call details in payload.message
-    const message = payload.message || payload;
-    const type = message.type;
-
-    console.log(`📋 Webhook type: ${type}`);
 
     if (type === 'end-of-call-report') {
       const customerPhone = message.call?.customer?.number || message.customer?.number;
@@ -220,6 +238,16 @@ const handleVapiWebhook = async (req, res) => {
             console.log(`⚠️ Could not find lead with phone ${cleanPhone} for wallet deduction.`);
           }
         }
+
+        // ============================================================
+        // NOTIFY QUEUE MANAGER — Signal that this call is complete
+        // This unblocks the batch so it can track progress
+        // ============================================================
+        const wasResolved = resolveCall(customerPhone);
+        if (wasResolved) {
+          console.log(`🔔 Queue Manager notified: call for ${cleanPhone} resolved.`);
+        }
+
       } else {
         console.log('⚠️ No customer phone found in webhook payload!');
       }
